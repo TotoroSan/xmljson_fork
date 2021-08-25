@@ -48,7 +48,7 @@ def read(path):
 
 class TestCLI(unittest.TestCase):
     tmp = os.path.join(_folder, 'delete-output.json')
-
+    #FIXME yahoo test fails
     def test_cli(self):
         dialects = [xmljson.Abdera(), xmljson.BadgerFish(), xmljson.Cobra(),
                     xmljson.GData(), xmljson.Parker(), xmljson.Yahoo()]
@@ -86,8 +86,11 @@ class TestXmlJson(unittest.TestCase):
     def check_data(self, conv, **kwargs):
         'Returns method(jsonstring, xmlstring) that unparses both and checks'
         def compare(jsonstring, xmlstring):
+            # load in target jsonstring
             first = json.loads(jsonstring, object_pairs_hook=Dict)
+            # transform xmlstring according to passed convention object (e.g. badgerfish)
             second = conv.data(fromstring(xmlstring), **kwargs)
+            # check if both are equal
             self.assertEqual(first, second)
 
         return compare
@@ -106,6 +109,24 @@ class TestXmlJson(unittest.TestCase):
         for tag in self.invalid_tags:
             self.assertEqual(conv.etree({tag: 1}), [])
 
+    def check_nsmap(self, conv):
+        # conv is my conversion object (e.g. xmljson.badgerfish)
+        def compare(jsonstring, xmlstring):
+            result = conv.data(fromstring(xmlstring))
+            root = conv.etree(result) # der macht hier dann wieder xml aus dem json string (um xml ns zu testen?) -> glaube der vergleicht irgendwie xml namespaces
+            t1 = fromstring(xmlstring) # todo glaube er macht xml->json->xml und guckt dann ob die xml namespaces übereinstimmen, muss aber auch testen ob der json namespace passt so wie ich das will
+            t2 = root[0]
+            try:
+                t1.nsmap
+            except:
+                ns = {'charlie': "http://some-other-namespace"}
+
+                r1 = t1.find('charlie:joe', ns)
+                r2 = t2.find('charlie:joe', ns)
+                self.assertEqual(r1.tag, r2.tag)
+                return
+            self.assertEqual(t1.nsmap, t2.nsmap)
+        return compare
 
 class TestBadgerFish(TestXmlJson):
 
@@ -213,9 +234,13 @@ class TestBadgerFish(TestXmlJson):
             '<alice charlie="david">bob</alice>')
 
     def test_xml_namespace(self):
+        #fixme beispiele abändern -> namespace soll nicht none heißen, denke test is useless für mich
         'XML namespaces are not yet implemented'
-        with self.assertRaises(ValueError):
-            xmljson.badgerfish.etree({'alice': {'@xmlns': {'$': 'http://some-namespace'}}})
+        'Checks nsmap attribute of root tag'
+        eq = self.check_nsmap(xmljson.badgerfish)
+        eq('<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace"><charlie:joe>bob</charlie:joe></alice>')
+        # manual convert
+        #'{"alice":{"@xmlns":{"$":"http://some-namespace", "charlie":"http://some-other-namespace"}, "charlie:joe":"bob"}'
 
     def test_custom_dict(self):
         'Conversion to dict uses OrderedDict'
