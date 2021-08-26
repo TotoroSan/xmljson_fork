@@ -57,20 +57,18 @@ class XMLData(object):
         self.is_doc_root = True  # initial document root
         self.ns_as_attrib = ns_as_attrib
 
+        # store the current root of (partial) schema tree
+        self.root_schema_element = None
+        # store the current schema element
+        self.schema_element = None
+
         self.lxml_lib = True
 
         self.schema_stack = []
         self.schema_attribute_stack = []
-        self.last_child = False
 
-        # xml_schema that can be used for Typing
-        #self.xml_schema = xmlschema.XMLSchema(xml_schema)
-        # todo remove, only for testing
 
-        # todo die namespaces automatisch ziehen
-        self.namespaces = namespaces = {'':"http://www.ncbi.nlm.nih.gov/geo/info/MINiML"}
-
-        # if we use schema to type #TODO only works for Badgerfish for now
+        # if we use schema to type / only works for Abdera, Badgerfish, Gdata and Parker
         if xml_schema is None:
             self.schema_typing = False
         else:
@@ -308,30 +306,29 @@ class BadgerFish(XMLData):
     def __init__(self, **kwargs):
         super(BadgerFish, self).__init__(attr_prefix='@', text_content='$', ns_name='@xmlns', **kwargs)
 
-
+    # todo gucken wass ich noch in funktionen auslagern kann, um code übersichtlicher zu machen
     def data(self, root):
 
         '''Convert etree.Element into a dictionary'''
-        global root_schema_element
         value = self.dict() # create dict that represents the JSON Object
         children = [node for node in root if isinstance(node.tag, basestring)]  # list of all child elements
 
         # if typemapping is based on xml schema, search schema for element and get type
         if self.schema_typing:
             if self.is_doc_root:
-                schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                root_schema_element = schema_element
-                self.schema_stack.append(root_schema_element)
+                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
+                self.root_schema_element = self.schema_element
+                self.schema_stack.append(self.root_schema_element)
 
                 # if attributes exist for element find the attributes in the schema
                 if root.attrib.items():
-                    self.schema_attribute_stack.append(root_schema_element)
+                    self.schema_attribute_stack.append(self.root_schema_element)
 
             # todo kann das nicht nach unten verschieben, weil dort self.is_doc_root immer falsch ist,
             #  denn es wird im namespace teil gesetzt
             if (not self.is_doc_root) and root.text:
-                schema_element = self.schema_stack.pop()
-                schema_types = root_schema_element.type
+                self.schema_element = self.schema_stack.pop()
+                schema_types = self.root_schema_element.type
 
 
         #---------------------------------------- NAMESPACE HANDLING --------------------------------------------------
@@ -429,9 +426,9 @@ class BadgerFish(XMLData):
         if root.text and self.text_content is not None:
             text = root.text
             # if we can find a type
-            if self.schema_typing and schema_element.type:
+            if self.schema_typing and self.schema_element.type:
 
-                schema_types = schema_element.type
+                schema_types = self.schema_element.type
                 # if a simple type exists
                 if schema_types.simple_type:
                     if text.strip():
@@ -445,12 +442,12 @@ class BadgerFish(XMLData):
                             text = self._typemapping(text, schema_simple_type)
 
                         if self.simple_text and len(children) == len(root.attrib) == 0:
-                            value = self._fromstring(text)
+                            value = text
                         else:
                             value[self.text_content] = text
 
                         # previous element gets root schema element again
-                        root_schema_element = self.schema_stack[-1]
+                        self.root_schema_element = self.schema_stack[-1]
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
@@ -466,7 +463,6 @@ class BadgerFish(XMLData):
         for child in children:
             schema_element_found = False
             # todo platzhalter für tests
-            self.last_child = False
 
             if self.schema_typing:
                 # todo test: backtracke im schema bis element gefunden wurde
@@ -475,11 +471,11 @@ class BadgerFish(XMLData):
                 # muss über stack gehen und kann aber für die schema elemente nicht kinder abfragen -> gibt keinen weg abzufragen ob ich alle kinder abgearbeitet habe
                 # kind array oder ähnliches kann ich so nicht speichern ohne klasse // grundaufbau des moduls ist dafür einfach nicht geeignet
                 while not schema_element_found:
-                    for i in root_schema_element:
+                    for i in self.root_schema_element:
                         if not self.ns_as_attrib:
                             if i.local_name == child.tag:
                                 self.schema_stack.append(i)
-                                root_schema_element = i
+                                self.root_schema_element = i
 
                                 if child.attrib.items():
                                     self.schema_attribute_stack.append(i)
@@ -489,7 +485,7 @@ class BadgerFish(XMLData):
                         if self.ns_as_attrib:
                             if i.name == child.tag:
                                 self.schema_stack.append(i)
-                                root_schema_element = i
+                                self.root_schema_element = i
 
                                 if child.attrib.items():
                                     self.schema_attribute_stack.append(i)
@@ -500,10 +496,8 @@ class BadgerFish(XMLData):
                     if not schema_element_found:
                         # repeat for loop with next higher element if there is no match
                         self.schema_stack.pop()
-                        root_schema_element = self.schema_stack[-1]
+                        self.root_schema_element = self.schema_stack[-1]
 
-            if children.index(child) == len(children)-1:
-                self.last_child = True
 
             if self.ns_as_attrib:
                 child = XMLData._process_ns(self, child)
@@ -513,7 +507,6 @@ class BadgerFish(XMLData):
                 value.update(self.data(child)) #neues element wird dictionary hinzugefügt, rekursiver funktionsaufruf
 
             else: #list() creates emtpy list
-                # todo gucken ob ich stack action nicht hierher bewege
                 result = value.setdefault(child.tag, self.list()) #setdefault: returns value of child.tag if it exists, if not create key and set value to self.list()
                 result += self.data(child).values()
 
@@ -524,8 +517,6 @@ class BadgerFish(XMLData):
         # hier wird der value für einen knoten ohne kinder geschrieben
         return self.dict([(root.tag, value)])
 
-
-
 class GData(XMLData):
     '''Converts between XML and data using the GData convention'''
     def __init__(self, **kwargs):
@@ -535,7 +526,6 @@ class GData(XMLData):
 
         '''Convert etree.Element into a dictionary'''
         '''Convert etree.Element into a dictionary'''
-        global root_schema_element
         value = self.dict() # create dict that represents the JSON Object
         children = [node for node in root if isinstance(node.tag, basestring)]  # list of all child elements
         print(self.schema_stack)
@@ -543,21 +533,21 @@ class GData(XMLData):
         if self.schema_typing:
             if self.is_doc_root:
 
-                schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                root_schema_element = schema_element
+                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
+                self.root_schema_element = self.schema_element
 
-                self.schema_stack.append(root_schema_element)
+                self.schema_stack.append(self.root_schema_element)
             #schema_types = schema_element.type
                 # if attributes exist for element find the attributes in the schema
                 if root.attrib.items():
 
-                    self.schema_attribute_stack.append(root_schema_element)
+                    self.schema_attribute_stack.append(self.root_schema_element)
 
             # todo kann das nicht nach unten verschieben, weil dort self.is_doc_root immer falsch ist,
             #  denn es wird im namespace teil gesetzt
             if (not self.is_doc_root) and root.text:
-                schema_element = self.schema_stack.pop()
-                schema_types = root_schema_element.type
+                self.schema_element = self.schema_stack.pop()
+                schema_types = self.root_schema_element.type
 
         #---------------------------------------- NAMESPACE HANDLING --------------------------------------------------
         # if we want qualified Elementtags ("Person": {"@xmlns": {"null": "http://www.ncbi.nlm.nih.gov/geo/info/MINiML"})
@@ -658,9 +648,9 @@ class GData(XMLData):
         if root.text and self.text_content is not None:
             text = root.text
             # if we can find a type
-            if self.schema_typing and schema_element.type:
+            if self.schema_typing and self.schema_element.type:
 
-                schema_types = schema_element.type
+                schema_types = self.schema_element.type
                 # if a simple type exists
                 if schema_types.simple_type:
                     if text.strip():
@@ -674,12 +664,12 @@ class GData(XMLData):
                             text = self._typemapping(text, schema_simple_type)
 
                         if self.simple_text and len(children) == len(root.attrib) == 0:
-                            value = self._fromstring(text)
+                            value = text
                         else:
                             value[self.text_content] = text
 
                         # previous element gets root schema element again
-                        root_schema_element = self.schema_stack[-1]
+                        self.root_schema_element = self.schema_stack[-1]
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
@@ -694,7 +684,7 @@ class GData(XMLData):
 
             schema_element_found = False
             # todo platzhalter für tests
-            self.last_child = False
+
 
             if self.schema_typing:
                 # todo test: backtracke im schema bis element gefunden wurde
@@ -703,13 +693,11 @@ class GData(XMLData):
                 # muss über stack gehen und kann aber für die schema elemente nicht kinder abfragen -> gibt keinen weg abzufragen ob ich alle kinder abgearbeitet habe
                 # kind array oder ähnliches kann ich so nicht speichern ohne klasse // grundaufbau des moduls ist dafür einfach nicht geeignet
                 while not schema_element_found:
-                    for i in root_schema_element:
-                        print("child-tag" + str(child.tag))
-                        print("schema-tag" + str(i.local_name))  # todo maybe change to qualified name, child.tag is unqualified
+                    for i in self.root_schema_element:
                         if not self.ns_as_attrib:
                             if i.local_name == child.tag:
                                 self.schema_stack.append(i)
-                                root_schema_element = i
+                                self.root_schema_element = i
 
                                 if child.attrib.items():
                                     self.schema_attribute_stack.append(i)
@@ -719,7 +707,7 @@ class GData(XMLData):
                         if self.ns_as_attrib:
                             if i.name == child.tag:
                                 self.schema_stack.append(i)
-                                root_schema_element = i
+                                self.root_schema_element = i
 
                                 if child.attrib.items():
                                     self.schema_attribute_stack.append(i)
@@ -729,7 +717,7 @@ class GData(XMLData):
                     if not schema_element_found:
                         # repeat for loop with next higher element if there is no match
                         self.schema_stack.pop()
-                        root_schema_element = self.schema_stack[-1]
+                        self.root_schema_element = self.schema_stack[-1]
 
             # if abfrage hier ist dazu da um zu checken ob array gebraucht wird oder nicht
             if self.ns_as_attrib:
@@ -746,7 +734,6 @@ class GData(XMLData):
         return self.dict([(root.tag, value)])
 
 
-
 class Yahoo(XMLData):
     '''Converts between XML and data using the Yahoo convention'''
     def __init__(self, **kwargs):
@@ -757,23 +744,62 @@ class Yahoo(XMLData):
 class Parker(XMLData):
     '''Converts between XML and data using the Parker convention'''
     def __init__(self, **kwargs):
+        self.schema_stack = []
         super(Parker, self).__init__(**kwargs)
+
 
     def data(self, root, preserve_root=False):
         '''Convert etree.Element into a dictionary'''
         # If preserve_root is False, return the root element. This is easiest
         # done by wrapping the XML in a dummy root element that will be ignored.
+        #print(self.schema_stack)
+        # if typemapping is based on xml schema, search schema for element and get type
+        if self.schema_typing:
+            if self.is_doc_root:
+                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
+                self.root_schema_element = self.schema_element
+                self.schema_stack.append(self.root_schema_element)
+
+
+            # todo kann das nicht nach unten verschieben, weil dort self.is_doc_root immer falsch ist,
+            #  denn es wird im namespace teil gesetzt
+            if (not self.is_doc_root) and root.text:
+                self.schema_element = self.schema_stack.pop()
+                schema_types = self.root_schema_element.type
+
+            self.is_doc_root = False
+
         if preserve_root:
             new_root = root.makeelement('dummy_root', {})
             new_root.insert(0, root)
             root = new_root
 
-        # If no children, just return the text
+
         children = [node for node in root if isinstance(node.tag, basestring)]
-
-
+        # If no children, just return the text
         if len(children) == 0:
-            return self._fromstring(root.text)
+            if self.schema_typing and self.schema_element.type:
+                schema_types = self.schema_element.type
+                # if a simple type exists
+                if schema_types.simple_type:
+                        # get simple type
+                    schema_simple_type = schema_types.simple_type
+                        # if a base type exists
+                    if schema_types.simple_type.base_type:
+                        schema_base_type = schema_types.simple_type.base_type
+                        text = self._typemapping(root.text, schema_base_type)
+                    else:
+                        text = self._typemapping(root.text, schema_simple_type)
+
+                        # previous element gets root schema element again
+                    self.root_schema_element = self.schema_stack[-1]
+
+                    return text
+                else:
+                    return self._fromstring(root.text)
+
+            else:
+                return self._fromstring(root.text)
 
         # Element names become object properties
         count = Counter(child.tag for child in children)
@@ -781,6 +807,26 @@ class Parker(XMLData):
 
 
         for child in children:
+            schema_element_found = False
+            # todo platzhalter für tests
+            if self.schema_typing:
+                # todo test: backtracke im schema bis element gefunden wurde
+                #  (führt zu bug wenn kein passendes element existiert!) - da evtl noch was einbauen
+                # muss diese archtitektur wählen da: ich keine objekte für jedes element habe in dem ich daten abspeicehrn aknn
+                # muss über stack gehen und kann aber für die schema elemente nicht kinder abfragen -> gibt keinen weg abzufragen ob ich alle kinder abgearbeitet habe
+                # kind array oder ähnliches kann ich so nicht speichern ohne klasse // grundaufbau des moduls ist dafür einfach nicht geeignet
+                while not schema_element_found:
+                    for i in self.root_schema_element:
+                        if i.name == child.tag:
+                            self.schema_stack.append(i)
+                            self.root_schema_element = i
+                            schema_element_found = True  # break loop if match is found
+                            break
+                    if not schema_element_found:
+                        # repeat for loop with next higher element if there is no match
+                        self.schema_stack.pop()
+                        self.root_schema_element = self.schema_stack[-1]
+
             if count[child.tag] == 1:
                 result[child.tag] = self.data(child)
             else:
@@ -796,14 +842,50 @@ class Abdera(XMLData):
 
     def data(self, root):
         '''Convert etree.Element into a dictionary'''
-
         value = self.dict()
+
+        if self.schema_typing:
+            if self.is_doc_root:
+                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
+                self.root_schema_element = self.schema_element
+                self.schema_stack.append(self.root_schema_element)
+
+                # if attributes exist for element find the attributes in the schema
+                if root.attrib.items():
+                    self.schema_attribute_stack.append(self.root_schema_element)
+
+            if (not self.is_doc_root) and root.text:
+                self.schema_element = self.schema_stack.pop()
+                schema_types = self.root_schema_element.type
+
+            self.is_doc_root = False
+
 
         # Add attributes specific 'attributes' key
         if root.attrib:
             value['attributes'] = self.dict()
             for attr, attrval in root.attrib.items():
-                value['attributes'][unicode(attr)] = self._fromstring(attrval)
+
+                if self.schema_typing:
+
+                    schema_att_element = self.schema_attribute_stack[-1]
+                    schema_types = schema_att_element.type
+                    schema_attributes = schema_types.attributes
+
+                    # if we find the attribute
+                    if schema_attributes.get(attr):
+                        # attribute types are always simple types
+                        schema_attribute_type = schema_attributes.get(attr).type.base_type
+                        attrval = self._typemapping(attrval, schema_attribute_type)
+                        value['attributes'][unicode(attr)] = attrval
+
+                if not self.schema_typing:
+                    value['attributes'][unicode(attr)] = self._fromstring(attrval)
+
+        # remove the last item from attribute stack (only if we have attributes and stack is not empty)
+        if self.schema_attribute_stack and root.attrib.items():
+            self.schema_attribute_stack.pop()
+
 
         # Add children to specific 'children' key
         children_list = self.list()
@@ -812,13 +894,61 @@ class Abdera(XMLData):
         # Add root text
         if root.text and self.text_content is not None:
             text = root.text
-            if text.strip():
-                if self.simple_text and len(children) == len(root.attrib) == 0:
-                    value = self._fromstring(text)
-                else:
-                    children_list = [self._fromstring(text), ]
+
+            if self.schema_typing and self.schema_element.type:
+                schema_types = self.schema_element.type
+                # if a simple type exists
+                if schema_types.simple_type:
+                    if text.strip():
+                        # get simple type
+                        schema_simple_type = schema_types.simple_type
+                        # if a base type exists
+                        if schema_types.simple_type.base_type:
+                            schema_base_type = schema_types.simple_type.base_type
+                            text = self._typemapping(text, schema_base_type)
+                        else:
+                            text = self._typemapping(text, schema_simple_type)
+
+                        if self.simple_text and len(children) == len(root.attrib) == 0:
+                            value = text
+                        else:
+                            children_list = [text, ]
+
+                        # previous element gets root schema element again
+                        self.root_schema_element = self.schema_stack[-1]
+            else:
+                if text.strip():
+                    if self.simple_text and len(children) == len(root.attrib) == 0:
+                        value = self._fromstring(text)
+                    else:
+                        children_list = [self._fromstring(text), ]
+
 
         for child in children:
+            schema_element_found = False
+            # todo platzhalter für tests
+
+            if self.schema_typing:
+                # todo test: backtracke im schema bis element gefunden wurde
+                #  (führt zu bug wenn kein passendes element existiert!) - da evtl noch was einbauen
+                # muss diese archtitektur wählen da: ich keine objekte für jedes element habe in dem ich daten abspeicehrn aknn
+                # muss über stack gehen und kann aber für die schema elemente nicht kinder abfragen -> gibt keinen weg abzufragen ob ich alle kinder abgearbeitet habe
+                # kind array oder ähnliches kann ich so nicht speichern ohne klasse // grundaufbau des moduls ist dafür einfach nicht geeignet
+                while not schema_element_found:
+                    for i in self.root_schema_element:
+                        if i.name == child.tag:
+                            self.schema_stack.append(i)
+                            self.root_schema_element = i
+                            if child.attrib.items():
+                                self.schema_attribute_stack.append(i)
+                            schema_element_found = True  # break loop if match is found
+                            break
+
+                    if not schema_element_found:
+                        # repeat for loop with next higher element if there is no match
+                        self.schema_stack.pop()
+                        self.root_schema_element = self.schema_stack[-1]
+
             child_data = self.data(child)
             children_list.append(child_data)
 
@@ -905,8 +1035,8 @@ class Cobra(XMLData):
         for child in children:
             child_data = self.data(child)
             if (count[child.tag] == 1 and
-                    len(children_list) > 1 and
-                    isinstance(children_list[-1], dict)):
+                len(children_list) > 1 and
+                isinstance(children_list[-1], dict)):
                 # Merge keys to existing dictionary
                 children_list[-1].update(child_data)
             else:
@@ -919,9 +1049,9 @@ class Cobra(XMLData):
         return self.dict([(unicode(root.tag), value)])
 
 
-#abdera = Abdera()
+abdera = Abdera()
 badgerfish = BadgerFish()
-#cobra = Cobra()
+cobra = Cobra()
 gdata = GData()
-#parker = Parker()
+parker = Parker()
 #yahoo = Yahoo()

@@ -145,10 +145,14 @@ def my_test():
     #print(ET.tostring(root, pretty_print=True))
     # False = namespaces only in "header", True = namespaces for every object
     badgerfish_converter = xmljson.BadgerFish(ns_as_attrib=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
-    json_object = (badgerfish_converter.data(root))
+    gdata_converter = xmljson.GData(ns_as_attrib=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    abdera_converter = xmljson.Abdera(ns_as_attrib=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    parker_converter = xmljson.Parker(xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    cobra_converter = xmljson.Cobra()
+    json_object = (cobra_converter.data(root))
     print(dumps(json_object))
-    #if root.text:
-     #   print("salam")
+
+
 
     #print(xmljson.gdata.data(root))
 
