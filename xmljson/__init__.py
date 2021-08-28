@@ -308,19 +308,18 @@ class XMLData(object):
                         elem.set('xmlns:{}'.format(ns_prefix), ns_uri)
         return ElementTree(root).getroot()
 
-    def find_schema_element(self, child):
-        # todo test: backtracke im schema bis element gefunden wurde
-        #  (führt zu bug wenn kein passendes element existiert!) - da evtl noch was einbauen
-        # muss diese archtitektur wählen da: ich keine objekte für jedes element habe in dem ich daten abspeicehrn aknn
-        # muss über stack gehen und kann aber für die schema elemente nicht kinder abfragen -> gibt keinen weg abzufragen ob ich alle kinder abgearbeitet habe
-        # kind array oder ähnliches kann ich so nicht speichern ohne klasse // grundaufbau des moduls ist dafür einfach nicht geeignet
+    def find_schema_element(self, xmlelement):
+        """search schema for fitting element for xmlelement
+        self.schema_stack contains all visited elements that have not yet been found
+        self.root_schemaelement is the root of the current subtree. Helper function for converters."""
+        # todo define what to do if element cant be found
         self.schema_element_found = False
         while not self.schema_element_found:
             for i in self.root_schema_element:
-                if i.name == child.tag:
+                if i.name == xmlelement.tag:
                     self.schema_stack.append(i)
                     self.root_schema_element = i
-                    if child.attrib.items():
+                    if xmlelement.attrib.items():
                         self.schema_attribute_stack.append(i)
                     self.schema_element_found = True  # break loop if match is found
                     break
@@ -351,6 +350,66 @@ class XMLData(object):
         # if no namespace can be found for the tag return without
         return tag
 
+    def manage_schema_stack(self, root):
+        """initialize schema stack and remove elements if needed"""
+        if self.is_doc_root:
+            self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
+            self.root_schema_element = self.schema_element
+            self.schema_stack.append(self.root_schema_element)
+            # if attributes exist for element find the attributes in the schema
+            if root.attrib.items():
+                self.schema_attribute_stack.append(self.root_schema_element)
+
+        elif root.text:
+            self.schema_element = self.schema_stack.pop()
+
+    def process_namespace(self, root, value, convention):
+        """create namespace object in root and namespaces attribute objects, if ns_as_attrib = True
+        Only used in badgerfish and gdata. Other conventions skip namespaces."""
+        nsmap = root.nsmap
+        uri = ET.QName(root).namespace
+        # split namespace uri and tag
+        # pushing namespaces to dict; Filtering namespaces by prefix except root node
+        if self.is_doc_root:
+            # initialize namespace object
+            value[self.ns_name] = {}
+            for key in nsmap.keys():
+                if key == None:
+                    if convention ==  "badgerfish":
+                        # enter standard namespace into toplevel namespace obj
+                        value[self.ns_name].update({self.text_content: nsmap[key]})
+                    if convention  == "gdata":
+                        value[self.ns_name] = nsmap[key]
+                else:
+                    if convention ==  "badgerfish":
+                        # enter standard namespace into toplevel namespace obj
+                        value[self.ns_name].update({key: nsmap[key]})
+                    if convention  == "gdata":
+                        ns_name = self.ns_name + "$" + key
+                        value[ns_name] = nsmap[key]
+                    # enter other namespaces into toplevel namespace obj
+        # if we want namespaces as JSON attributes
+        elif self.ns_as_attrib:
+            # initialize namespace object
+            value[self.ns_name] = {}
+            for key in nsmap.keys():
+                # check namespace prefix of xml element and write according namespace in json object
+                # could add the option here to leave out standard namespace / but badgerfish explicitely doesnt leave it out
+                if nsmap[key] == uri:
+                    if key == None:
+                        if convention == "badgerfish":
+                            # enter standard namespace into toplevel namespace obj
+                            value[self.ns_name].update({self.text_content: nsmap[key]})
+                        if convention == "gdata":
+                            value[self.ns_name] = nsmap[key]
+                    else:
+                        if convention == "badgerfish":
+                            # enter standard namespace into toplevel namespace obj
+                            value[self.ns_name].update({key: nsmap[key]})
+                        if convention == "gdata":
+                            ns_name = self.ns_name + "$" + key
+                            value[ns_name] = nsmap[key]
+        return value
 
 
 class BadgerFish(XMLData):
@@ -359,63 +418,24 @@ class BadgerFish(XMLData):
     def __init__(self, **kwargs):
         super(BadgerFish, self).__init__(attr_prefix='@', text_content='$', ns_name='@xmlns', **kwargs)
 
-    # todo gucken wass ich noch in funktionen auslagern kann, um code übersichtlicher zu machen
     def data(self, root):
 
         '''Convert etree.Element into a dictionary'''
         value = self.dict()  # create dict that represents the JSON Object
         children = [node for node in root if isinstance(node.tag, basestring)]  # list of all child elements
-        uri = ET.QName(root).namespace
+
         tag = ET.QName(root).localname
         nsmap = root.nsmap
 
         # if typemapping is based on xml schema, search schema for element and get type
         if self.schema_typing:
-            if self.is_doc_root:
-                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                self.root_schema_element = self.schema_element
-                self.schema_stack.append(self.root_schema_element)
-                # if attributes exist for element find the attributes in the schema
-                if root.attrib.items():
-                    self.schema_attribute_stack.append(self.root_schema_element)
+            self.manage_schema_stack(root)
 
-            if (not self.is_doc_root) and root.text:
-                self.schema_element = self.schema_stack.pop()
-                schema_types = self.root_schema_element.type
-
-        # ---------------------------------------- NAMESPACE HANDLING --------------------------------------------------
-
-        root = XMLData._process_ns(self, element=root)
         # form lxml.Element with namespaces if present
         # if object has a namespace
         if ET.QName(root).namespace:
-            # split namespace uri and tag
-            # pushing namespaces to dict; Filtering namespaces by prefix except root node
-            if self.is_doc_root:
-                # initialize namespace object
-                value[self.ns_name] = {}
-                for key in nsmap.keys():
-                    if key == None:
-                        # enter standard namespace into toplevel namespace obj
-                        value[self.ns_name].update({self.text_content: nsmap[key]})
-                    else:
-                        # enter other namespaces into toplevel namespace obj
-                        value[self.ns_name].update({key: nsmap[key]})
-            # if we want namespaces as JSON attributes
-            elif self.ns_as_attrib:
-                # initialize namespace object
-                value[self.ns_name] = {}
-                for key in nsmap.keys():
-                    # check namespace prefix of xml element and write according namespace in json object
-                    # could add the option here to leave out standard namespace / but badgerfish explicitely doesnt leave it out
-                    if nsmap[key] == uri:
-                        if key == None:
-                            # if standard namespace
-                            value[self.ns_name].update({self.text_content: nsmap[key]})
-                        elif nsmap[key] == uri:
-                            # if other namespace
-                            value[self.ns_name].update({key: nsmap[key]})
-
+            #root = XMLData._process_ns(self, element=root) # todo check if i need this
+            value = self.process_namespace(root, value, "badgerfish")
 
         # --------------------------------------- ATTRIBUTE HANDLING --------------------------------------------------
 
@@ -521,6 +541,7 @@ class BadgerFish(XMLData):
             #return self.dict([(root.tag, value)])
 
 
+
 class GData(XMLData):
     '''Converts between XML and data using the GData convention'''
 
@@ -533,71 +554,22 @@ class GData(XMLData):
         '''Convert etree.Element into a dictionary'''
         value = self.dict()  # create dict that represents the JSON Object
         children = [node for node in root if isinstance(node.tag, basestring)]  # list of all child elements
-        uri = ET.QName(root).namespace
         tag = ET.QName(root).localname
         nsmap = root.nsmap
 
-
-        # if typemapping is based on xml schema, search schema for element and get type
+        # if typemapping is based on xml schema initialize stack and manage it
         if self.schema_typing:
-            if self.is_doc_root:
+            self.manage_schema_stack(root)
 
-                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                self.root_schema_element = self.schema_element
-                self.schema_stack.append(self.root_schema_element)
-
-                # if attributes exist for element find the attributes in the schema
-                if root.attrib.items():
-                    self.schema_attribute_stack.append(self.root_schema_element)
-
-            if (not self.is_doc_root) and root.text:
-                self.schema_element = self.schema_stack.pop()
-                schema_types = self.root_schema_element.type
-
-        # ---------------------------------------- NAMESPACE HANDLING --------------------------------------------------
-        # if we want qualified Elementtags ("Person": {"@xmlns": {"null": "http://www.ncbi.nlm.nih.gov/geo/info/MINiML"})
-        # get docinfo in first iteration
-
-        root = XMLData._process_ns(self, element=root)
-        # form lxml.Element with namespaces if present
-        # if object has a namespace
+        # if object has a namespace process them (as attribute or not, depending on ns_as_attribute)
         if ET.QName(root).namespace:
-            # split namespace uri and tag
-            # pushing namespaces to dict; Filtering namespaces by prefix except root node
-            if self.is_doc_root:
-                # initialize namespace object
-                value[self.ns_name] = {}
-                for key in nsmap.keys():
-                    if key == None:
-                        # enter standard namespace into toplevel namespace obj
-                        value[self.ns_name] = nsmap[key]
-                    else:
-                        # enter other namespaces into toplevel namespace obj
-                        ns_name = self.ns_name + "$" + key
-                        value[ns_name] = nsmap[key]
-            # if we want namespaces as JSON attributes
-            elif self.ns_as_attrib:
-                # initialize namespace object
-                value[self.ns_name] = {}
-                for key in nsmap.keys():
-                    # check namespace prefix of xml element and write according namespace in json object
-                    # could add the option here to leave out standard namespace / but badgerfish explicitely doesnt leave it out
-                    if nsmap[key] == uri:
-                        if key == None:
-                            # if standard namespace
-                            value[self.ns_name] = nsmap[key]
-                        elif nsmap[key] == uri:
-                            # if other namespace
-                            ns_name = self.ns_name + "$" + key
-                            value[ns_name] = nsmap[key]
+            #root = XMLData._process_ns(self, element=root)
+            value = self.process_namespace(root, value, "gdata")
 
-        self.is_doc_root = False
 
-        # --------------------------------------------------------ATTRIBUTEHANDLING-------------------------------------
         for attr, attrval in root.attrib.items():  # für alle attribute des  elementes
             # if schema_typing is used and the attribute exists in the schema
             if self.schema_typing:
-
                 schema_att_element = self.schema_attribute_stack[-1]
                 schema_types = schema_att_element.type
                 schema_attributes = schema_types.attributes
@@ -606,7 +578,6 @@ class GData(XMLData):
                 if schema_attributes.get(attr):
                     # attribute types are always simple types
                     schema_attribute_type = schema_attributes.get(attr).type.base_type
-
                     attrval = self._typemapping(attrval, schema_attribute_type)
                     attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # schreibe attribut plus prefix wenn es eins gibt
                     value[attr] = attrval  # value ist mein dict in dem ich die values speichere zu den attributen
@@ -650,16 +621,17 @@ class GData(XMLData):
                     if self.simple_text and len(children) == len(root.attrib) == 0:
                         value = self._fromstring(text)
                     else:
+
                         value[self.text_content] = self._fromstring(text)
+        self.is_doc_root = False
+
 
         # merke, dass die tags alle noch den voll qualifizierten namen haben
         count = Counter(child.tag for child in
                         children)  # zählt das vorkommen der tags der kinder und eerzeugt dict (e.g. Sample:88)
         for child in children:
-
             if self.schema_typing:
                 self.find_schema_element(child)
-
             # if abfrage hier ist dazu da um zu checken ob array gebraucht wird oder nicht
             if self.ns_as_attrib:
                 child = XMLData._process_ns(self, child)
@@ -711,24 +683,15 @@ class Parker(XMLData):
         nsmap = root.nsmap
         tag = root.tag
         if self.schema_typing:
-            if self.is_doc_root:
-                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                self.root_schema_element = self.schema_element
-                self.schema_stack.append(self.root_schema_element)
+            self.manage_schema_stack(root)
 
-            # todo kann das nicht nach unten verschieben, weil dort self.is_doc_root immer falsch ist,
-            #  denn es wird im namespace teil gesetzt
-            if (not self.is_doc_root) and root.text:
-                self.schema_element = self.schema_stack.pop()
-                schema_types = self.root_schema_element.type
-
-        self.is_doc_root = False
 
         if preserve_root:
             new_root = root.makeelement('dummy_root', {})
             new_root.insert(0, root)
             root = new_root
 
+        self.is_doc_root = False
         children = [node for node in root if isinstance(node.tag, basestring)]
         # If no children, just return the text
         if len(children) == 0:
@@ -791,18 +754,7 @@ class Abdera(XMLData):
         tag = ET.QName(root).localname
         nsmap = root.nsmap
         if self.schema_typing:
-            if self.is_doc_root:
-                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                self.root_schema_element = self.schema_element
-                self.schema_stack.append(self.root_schema_element)
-
-                # if attributes exist for element find the attributes in the schema
-                if root.attrib.items():
-                    self.schema_attribute_stack.append(self.root_schema_element)
-
-            if (not self.is_doc_root) and root.text:
-                self.schema_element = self.schema_stack.pop()
-                schema_types = self.root_schema_element.type
+            self.manage_schema_stack(root)
 
         self.is_doc_root = False
 
@@ -954,17 +906,7 @@ class Cobra(XMLData):
 
         # if typemapping is based on xml schema, search schema for element and get type
         if self.schema_typing:
-            if self.is_doc_root:
-                self.schema_element = self.xml_schema.elements[ET.QName(root).localname]
-                self.root_schema_element = self.schema_element
-                self.schema_stack.append(self.root_schema_element)
-                # if attributes exist for element find the attributes in the schema
-                if root.attrib.items():
-                    self.schema_attribute_stack.append(self.root_schema_element)
-
-            if (not self.is_doc_root) and root.text:
-                self.schema_element = self.schema_stack.pop()
-                schema_types = self.root_schema_element.type
+            self.manage_schema_stack(root)
 
         self.is_doc_root = False
 
