@@ -20,21 +20,26 @@ def my_test():
     encoding = tree.docinfo.encoding
     standalone_flag = tree.docinfo.standalone
 
-    json_object = {}
-    json_object.update({"xml_prolog": {"xml_version": xml_version, "encoding": encoding, "standalone": standalone_flag}})
+    #json_object = {}
+    #json_object.update({"xml_prolog": {"xml_version": xml_version, "encoding": encoding, "standalone": standalone_flag}})
 
 
     # False = namespaces only in "header", True = namespaces for every object
-    badgerfish_converter = xmljson.BadgerFish(ns_as_attrib=False, ns_prefix=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
-    gdata_converter = xmljson.GData(ns_as_attrib=False, ns_prefix=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
-    abdera_converter = xmljson.Abdera(ns_as_attrib=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
-    parker_converter = xmljson.Parker(xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    badgerfish_converter = xmljson.BadgerFish(ns_as_attrib=False, ns_prefix=True)
+    gdata_converter = xmljson.GData(ns_as_attrib=False, ns_prefix=True)#, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    abdera_converter = xmljson.Abdera()#ns_as_attrib=True, xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
+    parker_converter = xmljson.Parker(ns_prefix=True)#xml_schema="C:/Users/Gsell/PycharmProjects/xmljson/tests/MINiML.xsd")
     cobra_converter = xmljson.Cobra()
-    json_object.update(abdera_converter.data(root))
+    #json_object.update(badgerfish_converter.data(root))
 
-    print(dumps(json_object))
+    #print(dumps(json_object))
 
-
+    xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace"><charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+    xml_string2= '<root><x/><y><z/></y></root>'
+    second = parker_converter.data(ET.fromstring(xml_string2), preserve_root=False)
+    #tree2 = ET.parse("C:/Users/Gsell/PycharmProjects/xmljson_fork/tests/abdera-1.xml")
+    #second = abdera_converter.data(tree2.getroot())
+    print(dumps(second))
 
 
 

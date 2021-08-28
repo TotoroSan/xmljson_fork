@@ -146,9 +146,11 @@ class XMLData(object):
             return False
 
         # FIXME: Using int() or float() is eating whitespaces unintendedly here
+        # why value.lower()? => makes test case fail cause 0.0M gets 0.0m for example
         try:
+
             if value.lower().startswith('0'):
-                return value.lower()
+                return value
             else:
                 return int(value.lower())
         except ValueError:
@@ -328,7 +330,7 @@ class XMLData(object):
                 self.schema_stack.pop()
                 self.root_schema_element = self.schema_stack[-1]
 
-    def uri_to_prefix(self, tag, nsmap):
+    def uri_to_prefix(self, tag, nsmap, conv=None):
         """changes prefix of prefixed tag from URI to prefix"""
         # takes root.tag from lxml.etree
         nsmap_uri = {}
@@ -344,7 +346,10 @@ class XMLData(object):
                 if nsmap_uri[ns_uri] == None:
                     pass
                 else:
-                    tag = tag + nsmap_uri[uri] # prefix namespace tag
+                    if conv == "gdata":
+                        tag = nsmap_uri[uri] + "$" + tag # prefix namespace tag
+                    else:
+                        tag = nsmap_uri[uri] + ":" + tag  # prefix namespace tag
                 return tag
 
         # if no namespace can be found for the tag return without
@@ -378,19 +383,20 @@ class XMLData(object):
                     if convention ==  "badgerfish":
                         # enter standard namespace into toplevel namespace obj
                         value[self.ns_name].update({self.text_content: nsmap[key]})
-                    if convention  == "gdata":
+                    elif convention  == "gdata":
                         value[self.ns_name] = nsmap[key]
                 else:
                     if convention ==  "badgerfish":
                         # enter standard namespace into toplevel namespace obj
                         value[self.ns_name].update({key: nsmap[key]})
-                    if convention  == "gdata":
+                    elif convention  == "gdata":
                         ns_name = self.ns_name + "$" + key
                         value[ns_name] = nsmap[key]
                     # enter other namespaces into toplevel namespace obj
         # if we want namespaces as JSON attributes
         elif self.ns_as_attrib:
             # initialize namespace object
+            # todo ich glaube das will ich nur wenn ich badgerfish habe oder
             value[self.ns_name] = {}
             for key in nsmap.keys():
                 # check namespace prefix of xml element and write according namespace in json object
@@ -400,15 +406,16 @@ class XMLData(object):
                         if convention == "badgerfish":
                             # enter standard namespace into toplevel namespace obj
                             value[self.ns_name].update({self.text_content: nsmap[key]})
-                        if convention == "gdata":
+                        elif convention == "gdata":
                             value[self.ns_name] = nsmap[key]
                     else:
                         if convention == "badgerfish":
                             # enter standard namespace into toplevel namespace obj
                             value[self.ns_name].update({key: nsmap[key]})
-                        if convention == "gdata":
+                        elif convention == "gdata":
                             ns_name = self.ns_name + "$" + key
                             value[ns_name] = nsmap[key]
+                            del value[self.ns_name] # delete old key (standard ns, since its empty)
         return value
 
 
@@ -534,7 +541,7 @@ class BadgerFish(XMLData):
             return self.dict([(tag, value)])
         # if we want prefixed objectnames
         if self.ns_prefix:
-            # use this function if prefix abbr. and not uris are wanted
+            # use this function if prefixes and not uris are wanted as prefix
             tag = self.uri_to_prefix(root.tag, nsmap)
             return self.dict([(tag, value)])
             # use this if uris as prefix are wanted
@@ -565,7 +572,7 @@ class GData(XMLData):
         if ET.QName(root).namespace:
             #root = XMLData._process_ns(self, element=root)
             value = self.process_namespace(root, value, "gdata")
-
+        self.is_doc_root = False
 
         for attr, attrval in root.attrib.items():  # für alle attribute des  elementes
             # if schema_typing is used and the attribute exists in the schema
@@ -623,7 +630,7 @@ class GData(XMLData):
                     else:
 
                         value[self.text_content] = self._fromstring(text)
-        self.is_doc_root = False
+
 
 
         # merke, dass die tags alle noch den voll qualifizierten namen haben
@@ -661,7 +668,7 @@ class GData(XMLData):
         # if we want prefixed objectnames
         if self.ns_prefix:
             # use this function if prefix abbr. and not uris are wanted
-            tag = self.uri_to_prefix(root.tag, nsmap)
+            tag = self.uri_to_prefix(root.tag, nsmap, conv="gdata")
             return self.dict([(tag, value)])
             # use this if uris as prefix are wanted
             # return self.dict([(root.tag, value)])
@@ -730,9 +737,9 @@ class Parker(XMLData):
             if not self.ns_prefix:
                 tag = ET.QName(child).localname
 
-            elif self.ns_prefix:
-                tag = root.tag  # use this if uris as prefix
-                # tag = self.uri_to_prefix(root.tag, nsmap) #use this if prefix
+            if self.ns_prefix:
+                tag = child.tag  # use this if uris as prefix
+            #    tag = self.uri_to_prefix(child.tag, nsmap) #use this if prefix
 
             if count[child.tag] == 1:
                 result[tag] = self.data(child)
@@ -833,7 +840,6 @@ class Abdera(XMLData):
 
         elif len(children_list) > 0:
             value['children'] = children_list
-
 
         # if we do not want prefixed objectnames
         if not self.ns_prefix:

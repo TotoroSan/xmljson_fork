@@ -111,22 +111,31 @@ class TestXmlJson(unittest.TestCase):
 
     def check_nsmap(self, conv):
         # conv is my conversion object (e.g. xmljson.badgerfish)
+        # todo wieder zurück konvertieren zu xml und das auch prüfen, und nsmaps vorher und nachher vergleichen
         def compare(jsonstring, xmlstring):
-            result = conv.data(fromstring(xmlstring))
-            root = conv.etree(result) # der macht hier dann wieder xml aus dem json string (um xml ns zu testen?) -> glaube der vergleicht irgendwie xml namespaces
-            t1 = fromstring(xmlstring) # todo glaube er macht xml->json->xml und guckt dann ob die xml namespaces übereinstimmen, muss aber auch testen ob der json namespace passt so wie ich das will
-            t2 = root[0]
-            try:
-                t1.nsmap
-            except:
-                ns = {'charlie': "http://some-other-namespace"}
+            first = json.loads(jsonstring, object_pairs_hook=Dict)
+            second = conv.data(fromstring(xmlstring))
+            self.assertEqual(first, second)
 
-                r1 = t1.find('charlie:joe', ns)
-                r2 = t2.find('charlie:joe', ns)
-                self.assertEqual(r1.tag, r2.tag)
-                return
-            self.assertEqual(t1.nsmap, t2.nsmap)
+            # todo wieder zurück konvertieren zu xml und das auch prüfen, aber noch nicht implementiert
+            # root = conv.etree(result) # der macht hier dann wieder xml aus dem json string (um xml ns zu testen?) -> glaube der vergleicht irgendwie xml namespaces
+            # t1 = fromstring(xmlstring) # todo glaube er macht xml->json->xml und guckt dann ob die xml namespaces übereinstimmen, muss aber auch testen ob der json namespace passt so wie ich das will
+            # t2 = root[0]
+            # try:
+            #     t1.nsmap
+            # except:
+            #     ns = {'charlie': "http://some-other-namespace"}
+            #
+            #     r1 = t1.find('charlie:joe', ns)
+            #     r2 = t2.find('charlie:joe', ns)
+            #     self.assertEqual(r1.tag, r2.tag)
+            #     return
+            # self.assertEqual(t1.nsmap, t2.nsmap)
         return compare
+
+    @unittest.skip('To be written')
+    def check_schema_type_inference(self):
+        pass
 
 class TestBadgerFish(TestXmlJson):
 
@@ -234,11 +243,53 @@ class TestBadgerFish(TestXmlJson):
             '<alice charlie="david">bob</alice>')
 
     def test_xml_namespace(self):
-        #fixme beispiele abändern -> namespace soll nicht none heißen, denke test is useless für mich
-        'XML namespaces are not yet implemented'
+        #Todo test retransformation to xml, with nsmap element
+        'Checking correct mapping of XML Namespaces to JSON with different options'
         'Checks nsmap attribute of root tag'
-        eq = self.check_nsmap(xmljson.badgerfish)
-        eq('<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace"><charlie:joe>bob</charlie:joe></alice>')
+
+        badgerfish = xmljson.BadgerFish(ns_as_attrib=True, ns_prefix=False)
+        eq = self.check_nsmap(badgerfish)
+        json_string = '{"alice":{"@xmlns":{"$":"http://some-namespace","charlie":"http://some-other-namespace"},' \
+                      '"joe":{"@xmlns":{"charlie":"http://some-other-namespace"},"$":"bob"},"david":{"@xmlns":{"$":"http://some-namespace"},"$":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        #--------------------------------------------------------------------------------------------------------------
+        badgerfish = xmljson.BadgerFish(ns_as_attrib=False, ns_prefix=False)
+        eq = self.check_nsmap(badgerfish)
+        json_string = '{"alice":{"@xmlns":{"$":"http://some-namespace","charlie":"http://some-other-namespace"},' \
+                      '"joe":{"$":"bob"},"david":{"$":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # testing with prefixes, not URIs as prefix.
+        badgerfish = xmljson.BadgerFish(ns_as_attrib=False, ns_prefix=True)
+        eq = self.check_nsmap(badgerfish)
+        json_string = '{"alice":{"@xmlns":{"$":"http://some-namespace","charlie":"http://some-other-namespace"},' \
+                      '"charlie:joe":{"$":"bob"},"david":{"$":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # just for test purposes, this case makes no sense in practice
+        badgerfish = xmljson.BadgerFish(ns_as_attrib=True, ns_prefix=True)
+        eq = self.check_nsmap(badgerfish)
+        json_string = '{"alice":{"@xmlns":{"$":"http://some-namespace","charlie":"http://some-other-namespace"},' \
+                      '"charlie:joe":{"@xmlns":{"charlie":"http://some-other-namespace"},"$":"bob"},"david":{"@xmlns":{"$":"http://some-namespace"},"$":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+
+
         # manual convert
         #'{"alice":{"@xmlns":{"$":"http://some-namespace", "charlie":"http://some-other-namespace"}, "charlie:joe":"bob"}'
 
@@ -271,6 +322,10 @@ class TestBadgerFish(TestXmlJson):
         j2x_convert({"x": {"$": False}}, '<x>false</x>')
         j2x_strings({"x": {"$": False}}, '<x>False</x>')
 
+    @unittest.skip('To be written')
+    def schema_type_inference(self, converter=None):
+        'Type inference from XML Schema for Badgerfish'
+        pass
 
 class TestGData(TestXmlJson):
 
@@ -362,6 +417,52 @@ class TestGData(TestXmlJson):
         eq('{"root": {"version": 1.0, "$t": "testing", "element": {"test": true, "$t": 1}}}',
            '<root version="1.0">testing<!--comment--><element test="true">1</element></root>')
 
+    def test_xml_namespace(self):
+        #Todo test retransformation to xml, with nsmap element
+        'Checking correct mapping of XML Namespaces to JSON with different options'
+        'Checks nsmap attribute of root tag'
+
+        gdata = xmljson.GData(ns_as_attrib=True, ns_prefix=False)
+        eq = self.check_nsmap(gdata)
+        json_string = '{"alice":{"xmlns":"http://some-namespace","xmlns$charlie":"http://some-other-namespace",' \
+                      '"joe":{"xmlns$charlie":"http://some-other-namespace","$t":"bob"},"david":{"xmlns":"http://some-namespace","$t":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        #--------------------------------------------------------------------------------------------------------------
+        gdata = xmljson.GData(ns_as_attrib=False, ns_prefix=False)
+        eq = self.check_nsmap(gdata)
+        json_string = '{"alice":{"xmlns":"http://some-namespace","xmlns$charlie":"http://some-other-namespace",' \
+                      '"joe":{"$t":"bob"},"david":{"$t":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # testing with prefixes, not URIs as prefix.
+        gdata = xmljson.GData(ns_as_attrib=False, ns_prefix=True)
+        eq = self.check_nsmap(gdata)
+        json_string = '{"alice":{"xmlns":"http://some-namespace","xmlns$charlie":"http://some-other-namespace",' \
+                      '"charlie$joe":{"$t":"bob"},"david":{"$t":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # just for test purposes, this case makes no sense in practice
+        gdata = xmljson.GData(ns_as_attrib=True, ns_prefix=True)
+        eq = self.check_nsmap(gdata)
+        json_string = '{"alice":{"xmlns":"http://some-namespace","xmlns$charlie":"http://some-other-namespace",' \
+                      '"charlie$joe":{"xmlns$charlie":"http://some-other-namespace","$t":"bob"},"david":{"xmlns":"http://some-namespace","$t":"richard"}}}'
+
+        xml_string = '<alice xmlns="http://some-namespace" xmlns:charlie="http://some-other-namespace">' \
+                     '<charlie:joe>bob</charlie:joe><david>richard</david></alice>'
+        eq(json_string, xml_string)
+
     def test_xml_fromstring(self):
         'xml_fromstring=False does not convert types'
         x2j_convert = self.check_data(xmljson.GData(xml_fromstring=True))
@@ -378,6 +479,10 @@ class TestGData(TestXmlJson):
         j2x_convert({"x": {"$t": False}}, '<x>false</x>')
         j2x_strings({"x": {"$t": False}}, '<x>False</x>')
 
+    @unittest.skip('To be written')
+    def schema_type_inference(self, converter=None):
+        'Type inference from XML Schema for GData'
+        pass
 
 class TestParker(TestXmlJson):
 
@@ -417,9 +522,12 @@ class TestParker(TestXmlJson):
 
         self.check_invalid_tags(xmljson.Parker)
 
-    def _test_data(self):
+    def test_data(self):
+        # todo fix
         'Parker conversion from etree to data'
-        eq = self.check_data(xmljson.parker)
+        parker_converter = xmljson.Parker(ns_prefix=True)
+
+        eq = self.check_data(parker_converter)
 
         # Dicts
         eq('null', '<x/>')
@@ -542,6 +650,10 @@ class TestParker(TestXmlJson):
         j2x_strings(False, '<False/>')
 
 
+    @unittest.skip('To be written')
+    def schema_type_inference(self, converter=None):
+        'Type inference from XML Schema for Parker'
+        pass
 class TestYahoo(TestXmlJson):
     def test_etree(self):
         'Yahoo conversion from data to etree'
@@ -685,7 +797,10 @@ class TestAbdera(TestXmlJson):
         eq(read('abdera-3.json'), read('abdera-3.xml'))
         eq(read('abdera-4.json'), read('abdera-4.xml'))
 
-
+    @unittest.skip('To be written')
+    def schema_type_inference(self, converter=None):
+        'Type inference from XML Schema for Abdera'
+        pass
 class TestCobra(TestXmlJson):
 
     def test_etree(self, converter=None):
@@ -774,3 +889,8 @@ class TestCobra(TestXmlJson):
         # Attributes go in specific "attributes" dictionary
         eq('{"alice": {"attributes": {"charlie": "david"}, "children": ["bob"]}}',
             '<alice charlie="david">bob</alice>')
+
+    @unittest.skip('To be written')
+    def schema_type_inference(self, converter=None):
+        'Type inference from XML Schema for Cobra'
+        pass
