@@ -216,7 +216,6 @@ class XMLData(object):
             text = root.text
             # if we can find a type
             if self.schema_typing and self.schema_element.type:
-
                 schema_types = self.schema_element.type
                 # if a simple type exists
                 if schema_types.simple_type:
@@ -235,8 +234,8 @@ class XMLData(object):
                         else:
                             value[self.text_content] = text
 
-                        # previous element gets root schema element again
-                        self.root_schema_element = self.schema_stack[-1]
+                    # previous element gets root schema element again
+                    self.root_schema_element = self.schema_stack[-1]
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
@@ -441,6 +440,7 @@ class XMLData(object):
         self.schema_stack contains all visited elements that have not yet been found
         self.root_schemaelement is the root of the current subtree. Helper function for converters."""
         # todo define what to do if element cant be found
+
         self.schema_element_found = False
         while not self.schema_element_found:
             for i in self.root_schema_element:
@@ -466,9 +466,12 @@ class XMLData(object):
             if root.attrib.items():
                 self.schema_attribute_stack.append(self.root_schema_element)
 
+        # todo: erklärung => dieser teil ist eigentlich redundant, da in _find_schema_element auch das element gepoppt wird
+        # allerdings erst nach einer schleife, dies kann hierdurch vermieden werden
         elif root.text:
             self.schema_element = self.schema_stack.pop()
 
+        # todo implement handling of elements with text and children -> doesn't work yet
     def _process_namespace(self, root, value):
         """create namespace object in root and namespaces attribute objects, if ns_as_attrib = True
         Only used in badgerfish and gdata. Other conventions skip namespaces."""
@@ -708,7 +711,7 @@ class Abdera(XMLData):
                             children_list = [text, ]
 
                         # previous element gets root schema element again
-                        self.root_schema_element = self.schema_stack[-1]
+                    self.root_schema_element = self.schema_stack[-1]
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
