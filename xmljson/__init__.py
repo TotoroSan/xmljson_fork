@@ -3,7 +3,7 @@
 import sys
 from collections import Counter, OrderedDict
 from io import BytesIO
-
+import config
 import lxml.etree as ET
 import xmlschema
 
@@ -28,7 +28,7 @@ if sys.version_info[0] == 3:
 class XMLData(object):
     def __init__(self, xml_fromstring=True, xml_tostring=True, element=None, dict_type=None,
                  list_type=None, attr_prefix=None, text_content=None, simple_text=False, ns_name=None,
-                 ns_as_attrib=None, ns_as_prefix=None, invalid_tags=None, xml_schema=None, conv=None):
+                 ns_as_attrib=None, ns_as_prefix=None, invalid_tags=None, xml_schema=None, conv=None, harmonize_synonyms=False):
         # xml_fromstring == False(y) => '1' -> '1'
         # xml_fromstring == True     => '1' -> 1
         # xml_fromstring == fn       => '1' -> fn(1)
@@ -67,8 +67,6 @@ class XMLData(object):
         self.root_schema_element = None
         # store the current schema element
         self.schema_element = None
-        # true if schema_element has been found
-        self.schema_element_found = False
         # used for schema traversal / remembering position in schema
         self.schema_stack = []
         self.schema_attribute_stack = []
@@ -77,6 +75,9 @@ class XMLData(object):
 
         # used to identify convention
         self.conv = conv
+
+        #use if synoyms are to be harmonized -> synonyms to be harmonized can be specified in config.py
+        self.harmonize_synonyms = harmonize_synonyms
 
         #  use schema to infer type / only works for Abdera, Badgerfish, Gdata and Parker
         if xml_schema is None:
@@ -127,13 +128,13 @@ class XMLData(object):
         convert_to_bool = ["XsdAtomicBuiltin(name='xs:boolean')"]
 
         if str(xsd_type) is None:
-            return str(content)
+            return str(content.rstrip())
         if str(xsd_type) in convert_to_string:
-            return str(content)
+            return str(content.rstrip())
         if str(xsd_type) in convert_to_int:
-            return int(content)
+            return int(content.rstrip())
         if str(xsd_type) in convert_to_bool:
-            return bool(content)
+            return bool(content.rstrip())
 
     @staticmethod
     def _fromstring(value):
@@ -201,10 +202,17 @@ class XMLData(object):
                     schema_attribute_type = schema_attributes.get(attr).type.base_type
                     attrval = self._typemapping(attrval, schema_attribute_type)
                     attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # schreibe attribut plus prefix wenn es eins gibt
+                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                    if self.harmonize_synonyms:
+                        attrval = self._harmonize_synonym(attrval)
                     value[attr] = attrval  # value ist mein dict in dem ich die values speichere zu den attributen
 
             if not self.schema_typing:
                 attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # schreibe attribut plus prefix wenn es eins gibt
+                # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                if self.harmonize_synonyms:
+                    attrval = self._harmonize_synonym(attrval)
+
                 value[attr] = self._fromstring(attrval)
 
         # remove the last item from attribute stack (only if we have attributes and stack is not empty)
@@ -230,19 +238,18 @@ class XMLData(object):
                             text = self._typemapping(text, schema_simple_type)
 
                         if self.simple_text and len(children) == len(root.attrib) == 0:
-                            value = text
-                        else:
-                            value[self.text_content] = text
+                            value = text.rstrip()
 
-                    # previous element gets root schema element again
-                    self.root_schema_element = self.schema_stack[-1]
+                        else:
+                            value[self.text_content] = text.rstrip()
+
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
-                        value = self._fromstring(text)
+                        value = self._fromstring(text.rstrip())
                     else:
 
-                        value[self.text_content] = self._fromstring(text)
+                        value[self.text_content] = self._fromstring(text.rstrip())
 
         # merke, dass die tags alle noch den voll qualifizierten namen haben
         count = Counter(child.tag for child in
@@ -267,6 +274,15 @@ class XMLData(object):
                 result = value.setdefault(child_tag,
                                           self.list())
                 result += self.data(child).values()
+
+        # TODO this is in testing
+        # if self.schema_typing:
+        #     if children:
+        #         # remove element from schema stack after all children are done (but only if its not a leaf)
+        #         self.schema_stack.pop()
+        #         # set next higher element to root element (do not if stack is empty i.e in last step if root got removed)
+        #         if self.schema_stack:
+        #             self.root_schema_element = self.schema_stack[-1]
 
         # if simple_text, elements with no children nor attrs become '', not {}
         if isinstance(value, dict) and not value and self.simple_text:
@@ -436,11 +452,10 @@ class XMLData(object):
         return ElementTree(root).getroot()
 
     def _find_schema_element(self, xmlelement):
-        """search schema for fitting element for xmlelement
+        """Helper function for converters. Search schema for fitting element for xmlelement.
         self.schema_stack contains all visited elements that have not yet been found
-        self.root_schemaelement is the root of the current subtree. Helper function for converters."""
-        # todo define what to do if element cant be found
-
+        self.root_schemaelement is the root of the current subtree. """
+        # todo define what to do if element cant be found // at least raise exception
         self.schema_element_found = False
         while not self.schema_element_found:
             for i in self.root_schema_element:
@@ -452,6 +467,8 @@ class XMLData(object):
                     self.schema_element_found = True  # break loop if match is found
                     break
             if not self.schema_element_found:
+                print("reep")
+                #todo das wird als fallback genutzt (=> ohne das buggt der attribut part, vllt sind auch attribute schuld)
                 # repeat for loop with next higher element if there is no match
                 self.schema_stack.pop()
                 self.root_schema_element = self.schema_stack[-1]
@@ -470,8 +487,11 @@ class XMLData(object):
         # allerdings erst nach einer schleife, dies kann hierdurch vermieden werden
         elif root.text:
             self.schema_element = self.schema_stack.pop()
+            self.root_schema_element = self.schema_stack[-1]
+
 
         # todo implement handling of elements with text and children -> doesn't work yet
+
     def _process_namespace(self, root, value):
         """create namespace object in root and namespaces attribute objects, if ns_as_attrib = True
         Only used in badgerfish and gdata. Other conventions skip namespaces."""
@@ -549,6 +569,17 @@ class XMLData(object):
         # if no namespace can be found for the tag return without
         return tag
 
+    def _harmonize_synonym(self, value):
+        #position 0 contains list of synonyms, position 1 contains harmonized tag
+        if value in config.harmonize_as_age_raw[0]:
+            return config.harmonize_as_age_raw[1]
+        elif value in config.harmonize_as_genotype_raw[0]:
+            return config.harmonize_as_genotype_raw[1]
+        elif value in config.harmonize_as_treatment_raw[0]:
+            return config.harmonize_as_treatment_raw[1]
+        else:
+            return value
+
 
 class BadgerFish(XMLData):
     '''Converts between XML and data using the BadgerFish convention. Conversion back to XML only possible with default namespace Handling.'''
@@ -570,7 +601,7 @@ class GData(XMLData):
 class Parker(XMLData):
     '''Converts between XML and data using the Parker convention.'''
 
-    def __init__(self, ns_as_prefix=True, **kwargs):
+    def __init__(self, ns_as_prefix=False, **kwargs):
         super(Parker, self).__init__(ns_as_attrib=False, conv="parker", ns_as_prefix=ns_as_prefix, **kwargs)
 
     def data(self, root, preserve_root=False):
@@ -606,15 +637,12 @@ class Parker(XMLData):
                     else:
                         text = self._typemapping(root.text, schema_simple_type)
 
-                        # previous element gets root schema element again
-                    self.root_schema_element = self.schema_stack[-1]
-
                     return text
                 else:
-                    return self._fromstring(root.text)
+                    return self._fromstring(root.text).rstrip()
 
             else:
-                return self._fromstring(root.text)
+                return self._fromstring(root.text.rstrip())
 
         # Element names become object properties
         count = Counter(child.tag for child in children)
@@ -637,6 +665,13 @@ class Parker(XMLData):
                 result[tag] = self.data(child)
             else:
                 result.setdefault(tag, self.list()).append(self.data(child))
+
+        if self.schema_typing:
+            if children:
+                self.schema_stack.pop()
+                # todo das hier will ich nur machen wenn ich nicht bei der root bin
+                if self.schema_stack:
+                    self.root_schema_element = self.schema_stack[-1]
 
         return result
 
@@ -674,9 +709,15 @@ class Abdera(XMLData):
                         # attribute types are always simple types
                         schema_attribute_type = schema_attributes.get(attr).type.base_type
                         attrval = self._typemapping(attrval, schema_attribute_type)
+                        # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                        if self.harmonize_synonyms:
+                            attrval = self._harmonize_synonym(attrval)
                         value['attributes'][unicode(attr)] = attrval
 
                 if not self.schema_typing:
+                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                    if self.harmonize_synonyms:
+                        attrval = self._harmonize_synonym(attrval)
                     value['attributes'][unicode(attr)] = self._fromstring(attrval)
 
         # remove the last item from attribute stack (only if we have attributes and stack is not empty)
@@ -706,18 +747,16 @@ class Abdera(XMLData):
                             text = self._typemapping(text, schema_simple_type)
 
                         if self.simple_text and len(children) == len(root.attrib) == 0:
-                            value = text
+                            value = text.rstrip()
                         else:
-                            children_list = [text, ]
+                            children_list = [text.rstrip(), ]
 
-                        # previous element gets root schema element again
-                    self.root_schema_element = self.schema_stack[-1]
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
-                        value = self._fromstring(text)
+                        value = self._fromstring(text.rstrip())
                     else:
-                        children_list = [self._fromstring(text), ]
+                        children_list = [self._fromstring(text.rstrip()), ]
 
         for child in children:
 
@@ -726,6 +765,13 @@ class Abdera(XMLData):
 
             child_data = self.data(child)
             children_list.append(child_data)
+
+        if self.schema_typing:
+            if children:
+                self.schema_stack.pop()
+                # todo das hier will ich nur machen wenn ich nicht bei der root bin
+                if self.schema_stack:
+                    self.root_schema_element = self.schema_stack[-1]
 
         # Flatten children
         if len(root.attrib) == 0 and len(children_list) == 1:
@@ -740,9 +786,9 @@ class Abdera(XMLData):
         # if we want prefixed objectnames
         if self.ns_as_prefix:
             # use this function if prefix abbr. and not uris are wanted
-            tag = self._uri_to_prefix(root.tag, nsmap)
+            #tag = self._uri_to_prefix(root.tag, nsmap)
             # use this if uris as prefix are wanted
-            # tag = root.tag
+            tag = root.tag
             return self.dict([(unicode(tag), value)])
 
 
@@ -820,9 +866,15 @@ class Cobra(XMLData):
                         # attribute types are always simple types
                         schema_attribute_type = schema_attributes.get(attr).type.base_type
                         attrval = self._typemapping(root.attrib[attr], schema_attribute_type)
+                        # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                        if self.harmonize_synonyms:
+                            attrval = self._harmonize_synonym(attrval)
                         value['attributes'][unicode(attr)] = attrval
 
                 if not self.schema_typing:
+                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                    if self.harmonize_synonyms:
+                        attrval = self._harmonize_synonym(attrval)
                     value['attributes'][unicode(attr)] = root.attrib[attr]
 
         # remove the last item from attribute stack (only if we have attributes and stack is not empty)
@@ -852,19 +904,18 @@ class Cobra(XMLData):
                             text = self._typemapping(text, schema_simple_type)
 
                         if self.simple_text and len(children) == len(root.attrib) == 0:
-                            value = text
+                            value = text.rstrip()
                         else:
                             value[self.text_content] = text
-                            children_list = [text, ]
-                        # previous element gets root schema element again
-                        self.root_schema_element = self.schema_stack[-1]
+                            children_list = [text.rstrip(), ]
+
 
             else:
                 if text.strip():
                     if self.simple_text and len(children) == len(root.attrib) == 0:
-                        value = self._fromstring(text)
+                        value = self._fromstring(text.rstrip())
                     else:
-                        children_list = [self._fromstring(text), ]
+                        children_list = [self._fromstring(text.rstrip()), ]
 
         count = Counter(child.tag for child in children)
         for child in children:
@@ -881,6 +932,13 @@ class Cobra(XMLData):
             else:
                 # Add additional text
                 children_list.append(self.data(child))
+
+        if self.schema_typing:
+            if children:
+                self.schema_stack.pop()
+                # todo das hier will ich nur machen wenn ich nicht bei der root bin
+                if self.schema_stack:
+                    self.root_schema_element = self.schema_stack[-1]
 
         if len(children_list) > 0:
             value['children'] = children_list
