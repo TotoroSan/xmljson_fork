@@ -537,7 +537,6 @@ class TestParker(TestXmlJson):
         eq('{"bob": null, "david": null}',
            '<root><bob/><david/></root>')
 
-        # https://developer.mozilla.org/en-US/docs/JXON#The_Parker_Convention
 
         # The root element will be absorbed, for there is only one:
         eq('"text"', '<root>text</root>')
@@ -574,8 +573,8 @@ class TestParker(TestXmlJson):
         eq('{"element": 1}',
            '<root version="1.0">testing<!--comment--><element test="true">1</element></root>')
 
-        # Namespaces get absorbed, and prefixes will just be part of the property name:
-        eq('{"{http://zanstra.com/ding}dong": "binnen"}',
+        # Namespaces get absorbed:
+        eq('{"dong": "binnen"}',
            '<root xmlns:ding="http://zanstra.com/ding"><ding:dong>binnen</ding:dong></root>')
 
     def test_data_with_root(self):

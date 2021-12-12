@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+
+<MINiML
+   xmlns="http://www.ncbi.nlm.nih.gov/geo/info/MINiML"
+   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+   xsi:schemaLocation="http://www.ncbi.nlm.nih.gov/geo/info/MINiML http://www.ncbi.nlm.nih.gov/geo/info/MINiML.xsd"
+   version="0.5.0" >
+
+  <Contributor iid="contrib1">
+    <Person><First>Leonard</First><Last>Zon</Last></Person>
+    <Email>zon@enders.tch.harvard.edu</Email>
+    <Address>
+      <Line>1 Blackfan Circle</Line>
+      <City>Boston</City>
+    </Address>
+  </Contributor>
+</MINiML>

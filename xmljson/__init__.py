@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+import re
 import sys
 from collections import Counter, OrderedDict
 from io import BytesIO
@@ -7,14 +7,21 @@ import config
 import lxml.etree as ET
 import xmlschema
 
+# This fork does only work with lxml.etree
+# to make it work with xml.etree adjustments have to made: i.e. splitting into ns-prefix and tag has to be done
+# with split function, since QName(elem) is not available in xml.etree
 try:
     from lxml.etree import Element, iterparse, ElementTree
 except ImportError:
     from xml.etree.cElementTree import Element
 
+# This Module is a modified version of xmljson available under https://github.com/sanand0/xmljson
 __author__ = 'S Anand'
 __email__ = 'root.node@gmail.com'
 __version__ = '0.2.0'
+
+# Modified by Philipp Gsell
+# email = 's8129162@stud.uni-frankfurt.de'
 
 # Python 3: define unicode() as str()
 if sys.version_info[0] == 3:
@@ -22,16 +29,12 @@ if sys.version_info[0] == 3:
     basestring = str
 
 
-# this fork does only work with lxml.etree
-# to make it work with xml.etree adjustments have to made: i.e. splitting into ns-prefix and tag has to be done
-# with split function, since QName(elem) is not available in etree
 class XMLData(object):
     def __init__(self, xml_fromstring=True, xml_tostring=True, element=None, dict_type=None,
                  list_type=None, attr_prefix=None, text_content=None, simple_text=False, ns_name=None,
                  ns_as_attrib=None, ns_as_prefix=None, invalid_tags=None, xml_schema=None, conv=None, harmonize_synonyms=False):
         # xml_fromstring == False(y) => '1' -> '1'
         # xml_fromstring == True     => '1' -> 1
-        # xml_fromstring == fn       => '1' -> fn(1)
         if callable(xml_fromstring):
             self._fromstring = xml_fromstring
         elif not xml_fromstring:
@@ -45,11 +48,11 @@ class XMLData(object):
         self.dict = OrderedDict if dict_type is None else dict_type
         # list constructor (e.g. UserList)
         self.list = list if list_type is None else list_type
-        # Prefix attributes with a string (e.g. '$')
+        # Prefix attributes with a string (e.g. '@')
         self.attr_prefix = attr_prefix
         # Key that stores text content (e.g. '$t')
         self.text_content = text_content
-        # simple_text == False or None or 0 => '<x>a</x>' = {'x': {'a': {}}}
+        # simple_text == False or None or 0 => '<x>a</x>' = {'x': {'$t': 'a'}}
         # simple_text == True               => '<x>a</x>' = {'x': 'a'}
         self.simple_text = simple_text
 
@@ -63,7 +66,7 @@ class XMLData(object):
         # True if root element hasn't been visited
         self.is_doc_root = True
 
-        # store current root of (partial) schema tree in which we look for schema_element
+        # store current root of schema sub tree in which we look for schema_element
         self.root_schema_element = None
         # store the current schema element
         self.schema_element = None
@@ -77,7 +80,12 @@ class XMLData(object):
         self.conv = conv
 
         #use if synoyms are to be harmonized -> synonyms to be harmonized can be specified in config.py
+        # cleaning of element content is only implemented for Badgerfish and GData
         self.harmonize_synonyms = harmonize_synonyms
+        #names used for harmonized data
+        self.original_data_name = "original_data"
+        self.raw_data_name = "raw_data"
+
 
         #  use schema to infer type / only works for Abdera, Badgerfish, Gdata and Parker
         if xml_schema is None:
@@ -115,7 +123,7 @@ class XMLData(object):
 
     @staticmethod
     def _typemapping(content, xsd_type):
-        '''Convert content to json types according to mapping of xsd_simpletype'''
+        '''Convert content to json types according to specified mapping of xsd_simpletype'''
 
         convert_to_string = ["XsdAtomicBuiltin(name='xs:ID')", "XsdAtomicBuiltin(name='xs:string')",
                              "XsdAtomicBuiltin(name='xs:normalizedString')",
@@ -171,13 +179,16 @@ class XMLData(object):
         return value
 
     def data(self, root):
-        '''Convert etree.Element into a dictionary. Used for Badgerfish and GData, other conventions overwrite this function
-        '''
+        '''Convert etree.Element into a dictionary.
+        Used for Badgerfish and GData, other conventions overwrite this function.'''
 
         value = self.dict()  # create dict that represents the JSON Object
         children = [node for node in root if isinstance(node.tag, basestring)]  # list of all child elements
         tag = ET.QName(root).localname
         nsmap = root.nsmap
+        # helper dictionaries for harmonizing of tags and content
+        harmonizing_dict = self.dict()
+        original_dict = self.dict()
 
         # if typemapping is based on xml schema initialize stack and manage it
         if self.schema_typing:
@@ -185,11 +196,10 @@ class XMLData(object):
 
         # if object has a namespace process them (as attribute or not, depending on ns_as_attribute)
         if ET.QName(root).namespace:
-            # root = XMLData._process_ns(self, element=root)
             value = self._process_namespace(root, value)
 
         self.is_doc_root = False
-        for attr, attrval in root.attrib.items():  # für alle attribute des  elementes
+        for attr, attrval in root.attrib.items():  # for all attribute kv-pairs of an element
             # if schema_typing is used and the attribute exists in the schema
             if self.schema_typing:
                 schema_att_element = self.schema_attribute_stack[-1]
@@ -199,81 +209,142 @@ class XMLData(object):
                 # if we find the attribute
                 if schema_attributes.get(attr):
                     # attribute types are always simple types
-                    schema_attribute_type = schema_attributes.get(attr).type.base_type
-                    attrval = self._typemapping(attrval, schema_attribute_type)
-                    attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # schreibe attribut plus prefix wenn es eins gibt
-                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
-                    if self.harmonize_synonyms:
-                        attrval = self._harmonize_synonym(attrval)
-                    value[attr] = attrval  # value ist mein dict in dem ich die values speichere zu den attributen
+                    schema_attribute_type = schema_attributes.get(attr).type.base_type   # get attribute base type
+                    attrval = self._typemapping(attrval, schema_attribute_type)  # map attribute to predefined type
+                    attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # add attribute prefix if exists
+
+                    # harmonize synonyms => certain attribute values are converted to a harmonized value
+                    if self.harmonize_synonyms and tag == "Characteristics":  # harmonize Characteristics attributes
+                        attrval_harmonized = self._harmonize_tag(attrval)  # get harmonized value
+
+                        original_dict[attr] = self._fromstring(attrval)  # create dict entry original data
+                        value[self.original_data_name] = original_dict  # insert attribute object into original_data dict
+
+                        harmonizing_dict[attr] = self._fromstring(attrval_harmonized)  # create dict entry harmonized data
+                        value[self.raw_data_name] = harmonizing_dict  # insert object into raw_data dict
+                    else:
+                        value[attr] = attrval  # create dict entry for attribute
+                    # remove the last item from attribute stack (only if we have attributes and stack is not empty)
+                    # if self.schema_attribute_stack and root.attrib.items():
+                    #     self.schema_attribute_stack.pop()
 
             if not self.schema_typing:
-                attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # schreibe attribut plus prefix wenn es eins gibt
-                # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
-                if self.harmonize_synonyms:
-                    attrval = self._harmonize_synonym(attrval)
+                attr = attr if self.attr_prefix is None else self.attr_prefix + attr  # add attribute prefix if exists
+                # harmonize synonyms => characteristic attribute values are converted to a harmonized value
+                if self.harmonize_synonyms and tag == "Characteristics":  # harmonize Characteristics attributes
+                    attrval_harmonized = self._harmonize_tag(attrval)  # get harmonized value
 
-                value[attr] = self._fromstring(attrval)
+                    original_dict[attr] = self._fromstring(attrval)  # create dict entry original data
+                    value[self.original_data_name] = original_dict  # insert attribute object into original_data dict
 
-        # remove the last item from attribute stack (only if we have attributes and stack is not empty)
+                    harmonizing_dict[attr] = self._fromstring(attrval_harmonized)  # create dict entry harmonized data
+                    value[self.raw_data_name] = harmonizing_dict  # insert object into raw_data dict
+                else:
+                    value[attr] = self._fromstring(attrval)  # create dict entry for attribute
+
+        #uncomment if problems with attr stack
         if self.schema_attribute_stack and root.attrib.items():
             self.schema_attribute_stack.pop()
 
         # -------------------------------------- TEXT HANDLING ---------------------------------------------------------
         if root.text and self.text_content is not None:
             text = root.text
-            # if we can find a type
+            # if we want to infer type from the schema and we can find a type
             if self.schema_typing and self.schema_element.type:
                 schema_types = self.schema_element.type
-                # if a simple type exists
-                if schema_types.simple_type:
+                if schema_types.simple_type:  # if a simple type exists
                     if text.strip():
-                        # get simple type
-                        schema_simple_type = schema_types.simple_type
-                        # if a base type exists
-                        if schema_types.simple_type.base_type:
-                            schema_base_type = schema_types.simple_type.base_type
-                            text = self._typemapping(text, schema_base_type)
+                        schema_simple_type = schema_types.simple_type  # get simple type
+                        if schema_types.simple_type.base_type:  # if a base type exists
+                            schema_base_type = schema_types.simple_type.base_type  # get base type
+                            text = self._typemapping(text, schema_base_type)  # map base type to json type
                         else:
-                            text = self._typemapping(text, schema_simple_type)
+                            text = self._typemapping(text, schema_simple_type)  # map simple typ to json type
 
-                        if self.simple_text and len(children) == len(root.attrib) == 0:
+                        # data cleaning logic for content of specified MINiML-Elements
+                        if self.harmonize_synonyms and tag == "Characteristics":  # Logic for Characteristics Content
+                            if attrval_harmonized == "treatment_raw":  # treatment_raw gets split => special case
+                                harmonized_text = self._harmonize_content(attrval_harmonized, text.rstrip())  # clean the content
+                                harmonizing_dict["concentration"] = {self.text_content: harmonized_text[0]}  # add concentration object with according value to harmonized object
+                                harmonizing_dict["compound"] = {self.text_content: harmonized_text[1]}  # add compound object with according value to harmonized object
+                                original_dict[self.text_content] = self._fromstring(text.rstrip()) # insert original value into original object
+                            else: # harmonization for rest of the tag values
+                                harmonized_text = self._harmonize_content(attrval_harmonized, text.rstrip()) # clean the content
+
+                                harmonizing_dict[self.text_content] = self._fromstring(harmonized_text.rstrip())  # add harmonized data with according value to harmonized object
+                                original_dict[self.text_content] = self._fromstring(text.rstrip()) # insert original value into original object
+                        elif self.harmonize_synonyms and tag == "Treatment-Protocol":  # Logic for Treatment Protocol
+                            original_dict[self.text_content] = self._fromstring(text.rstrip())  # insert original value into original dict
+                            value[self.original_data_name] = original_dict # save original data to dedicated object
+
+                            harmonized_text = self._harmonize_content("Treatment-Protocol", text.rstrip())   # harmonized treatment protocol data
+                            harmonizing_dict["duration"] = {self.text_content: self._fromstring(harmonized_text[0])}  # write duration object into harmonized dict
+                            harmonizing_dict["exposure_start"] = {self.text_content: self._fromstring(harmonized_text[1])}  # write exposure start object into harmonized ddict
+
+                            value[self.raw_data_name] = harmonizing_dict  # write harmonized data to dedicated object
+
+
+                        elif self.simple_text and len(children) == len(root.attrib) == 0:  # write vlaue if we can and dont use text markup
                             value = text.rstrip()
-
                         else:
-                            value[self.text_content] = text.rstrip()
+                            value[self.text_content] = text   #create object with text markup and value
 
             else:
                 if text.strip():
-                    if self.simple_text and len(children) == len(root.attrib) == 0:
+                    if self.harmonize_synonyms and tag == "Characteristics": #harmonize characteristics
+
+                        # treatment raw is special case since data is split and turned into 2 content objects
+                        if attrval_harmonized == "treatment_raw":
+                            harmonized_text = self._harmonize_content(attrval_harmonized, text.rstrip())
+                            harmonizing_dict["concentration"] = {self.text_content:harmonized_text[0]}
+                            harmonizing_dict["compound"] = {self.text_content:harmonized_text[1]}
+
+                            original_dict[self.text_content] = self._fromstring(text.rstrip())
+                        else:
+                        # harmonize tags and content for characteristics
+                            harmonized_text=self._harmonize_content(attrval_harmonized, text.rstrip())
+                            harmonizing_dict[self.text_content] = self._fromstring(harmonized_text.rstrip())
+                            original_dict[self.text_content] = self._fromstring(text.rstrip())
+
+
+                    elif self.harmonize_synonyms and tag == "Treatment-Protocol":  # harmonize protocol data
+
+                        original_dict[self.text_content] = self._fromstring(text.rstrip())
+                        value[self.original_data_name] = original_dict
+                        # write duration and exposure start to protocol data
+                        harmonized_text = self._harmonize_content("Treatment-Protocol", text.rstrip())
+                        harmonizing_dict["exposure_duration"] = {self.text_content:self._fromstring(harmonized_text[0])}
+                        harmonizing_dict["exposure_start"] = {self.text_content:self._fromstring(harmonized_text[1])}
+
+                        value[self.raw_data_name] = harmonizing_dict
+
+
+
+                    elif self.simple_text and len(children) == len(root.attrib) == 0:
                         value = self._fromstring(text.rstrip())
                     else:
-
                         value[self.text_content] = self._fromstring(text.rstrip())
 
-        # merke, dass die tags alle noch den voll qualifizierten namen haben
-        count = Counter(child.tag for child in
-                        children)  # zählt das vorkommen der tags der kinder und eerzeugt dict (e.g. Sample:88)
+        # note: all tags have fully qualified names including namespace prefix at this point
+        count = Counter(child.tag for child in children)  # count children tags and save number to dict for each child (e.g. Sample:88)
         for child in children:
             if self.schema_typing:
-                self._find_schema_element(child)
-            # if abfrage hier ist dazu da um zu checken ob array gebraucht wird oder nicht
-            if self.ns_as_attrib:
+                self._find_schema_element(child)  # find schema element for the child and reassign self.root_schema_element
+            if self.ns_as_attrib: # if namespaces are to be stored in dedicated object
                 child = XMLData._process_ns(self, child)
-            if count[child.tag] == 1:
-                value.update(self.data(child))  # neues element wird dictionary hinzugefügt, rekursiver funktionsaufruf
-            else:  # list() creates emtpy list
+            if count[child.tag] == 1:  # check if simple object is sufficient or array is needed (>1 => Array)
+                value.update(self.data(child))  # add result of recursive function call for new element to dictionary
+            else:
                 if not self.ns_as_prefix:
-                    child_tag = ET.QName(child).localname
+                    child_tag = ET.QName(child).localname  # remove namespace prefix
                 elif self.ns_as_prefix:
-                    # use first one if prefixes, second one if uri
+                    # use first one if prefixes for namespaces, uncomment second one if full uri as prefix
                     child_tag = self._uri_to_prefix(child.tag, nsmap)
                     # child_tag = child.tag
-                # setdefault: returns value of child.tag if it exists, if not create key and set value to self.list()
 
-                result = value.setdefault(child_tag,
-                                          self.list())
-                result += self.data(child).values()
+                # setdefault: returns value of child.tag if it exists, if not create key and set value to self.list()
+                result = value.setdefault(child_tag, self.list()) # get array if already exists or create empty array for the data
+                result += self.data(child).values()  # add values of result of recursive function call to result object
 
         # TODO this is in testing
         # if self.schema_typing:
@@ -288,7 +359,7 @@ class XMLData(object):
         if isinstance(value, dict) and not value and self.simple_text:
             value = ''
 
-        # hier wird der value für einen knoten ohne kinder geschrieben
+        # return full dict
         # if we do not want prefixed objectnames
         if not self.ns_as_prefix:
             return self.dict([(tag, value)])
@@ -396,9 +467,9 @@ class XMLData(object):
 
     @staticmethod
     def _process_ns(cls, element):
-        # todo checken wofür das ist
+        """strip namespaces"""
         if element.tag.startswith('{'):
-            # process attribute namespaces // für normale elemente bleibt es hier stehen
+            # process attribute namespaces
             if any([True if k.split(':')[0] == 'xmlns' else False for k in element.attrib.keys()]):
 
                 revers_attr = {v: k for k, v in element.attrib.items()}
@@ -454,11 +525,11 @@ class XMLData(object):
     def _find_schema_element(self, xmlelement):
         """Helper function for converters. Search schema for fitting element for xmlelement.
         self.schema_stack contains all visited elements that have not yet been found
-        self.root_schemaelement is the root of the current subtree. """
+        self.root_schema_element is the root of the current subtree. """
         # todo define what to do if element cant be found // at least raise exception
         self.schema_element_found = False
         while not self.schema_element_found:
-            for i in self.root_schema_element:
+            for i in self.root_schema_element: #search child elements of current root_schema_element for matches
                 if i.name == xmlelement.tag:
                     self.schema_stack.append(i)
                     self.root_schema_element = i
@@ -467,8 +538,6 @@ class XMLData(object):
                     self.schema_element_found = True  # break loop if match is found
                     break
             if not self.schema_element_found:
-                print("reep")
-                #todo das wird als fallback genutzt (=> ohne das buggt der attribut part, vllt sind auch attribute schuld)
                 # repeat for loop with next higher element if there is no match
                 self.schema_stack.pop()
                 self.root_schema_element = self.schema_stack[-1]
@@ -482,15 +551,10 @@ class XMLData(object):
             # if attributes exist for element find the attributes in the schema
             if root.attrib.items():
                 self.schema_attribute_stack.append(self.root_schema_element)
-
-        # todo: erklärung => dieser teil ist eigentlich redundant, da in _find_schema_element auch das element gepoppt wird
-        # allerdings erst nach einer schleife, dies kann hierdurch vermieden werden
+        # if root is just text, remove from stack to avoid errors
         elif root.text:
             self.schema_element = self.schema_stack.pop()
             self.root_schema_element = self.schema_stack[-1]
-
-
-        # todo implement handling of elements with text and children -> doesn't work yet
 
     def _process_namespace(self, root, value):
         """create namespace object in root and namespaces attribute objects, if ns_as_attrib = True
@@ -569,16 +633,125 @@ class XMLData(object):
         # if no namespace can be found for the tag return without
         return tag
 
-    def _harmonize_synonym(self, value):
+    def _harmonize_tag(self, tag):
+        """harmonize tag names (characteristic tags are attributesin XML)"""
         #position 0 contains list of synonyms, position 1 contains harmonized tag
-        if value in config.harmonize_as_age_raw[0]:
+        if tag in config.harmonize_as_age_raw[0]:
             return config.harmonize_as_age_raw[1]
-        elif value in config.harmonize_as_genotype_raw[0]:
+        elif tag in config.harmonize_as_genotype_raw[0]:
             return config.harmonize_as_genotype_raw[1]
-        elif value in config.harmonize_as_treatment_raw[0]:
+        elif tag in config.harmonize_as_treatment_raw[0]:
             return config.harmonize_as_treatment_raw[1]
         else:
-            return value
+            return tag
+
+    def _harmonize_content(self, tag, content):
+        """extract raw_data content by predefined rules"""
+
+        if tag == "age_raw":
+            age_raw = self.parse_for_hpf(content)
+            self.age = age_raw[0]  # save current age to compute exposure start for treatment protocol
+            self.age_unit = age_raw[1] # save current unit to compute exposure start for treatment protocol
+            raw_age = self.age + " " + self.age_unit
+
+            return raw_age
+        elif tag == "treatment_raw":
+            concentration_and_compound_raw = self.parse_for_concentration_and_compound(content) #result is tuple (concentration, compound)
+            return concentration_and_compound_raw
+        elif tag == "Treatment-Protocol":
+            duration_raw = self.parse_for_exposure_duration(content) # result is tuple (time, unit)
+            self.duration = duration_raw[0]
+            self.duration_unit = duration_raw[1]
+
+            duration_in_hours = self.convert_to_hours(self.duration, self.duration_unit)
+
+
+            duration_raw = str(duration_in_hours) + " " + "hours" # return result as one string in this case
+            raw_exposure_start = self.calculate_exposure_start(self.age, self.age_unit, self.duration, self.duration_unit)
+
+            return (duration_raw, raw_exposure_start)
+        # elif tag == "treatment_raw":
+        #     pass
+        # elif tag == "treatment_raw":
+        #     pass
+        else:
+            return content
+
+        #return raw_content
+
+    def parse_for_hpf(self, content):
+        """parses content for a number and a unit"""
+
+        numbers_and_units = re.findall(r'(\d+\.*\d*\s?)([a-zA-Z]*)', content)
+        # # insert spaces if not there
+        # for i in numbers_and_units:
+        #     result = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', i)
+
+        #return first tuple ("time", "unit"), list always contains 1 element
+        return numbers_and_units[0]
+
+    def parse_for_concentration_and_compound(self, content):
+        """parses treatment data for concentration and compound. Returns Tuple (concentration+unit, compound)."""
+        # remove time entries from text, since sometimes times pollute the data
+        text_without_time = re.sub(r'(\d+\.*\d*\s?(millisecond|second|hour|minute|milliseconds'
+                                   r'|seconds|hours|minutes|sec|min|ms\b|s\b|m\b|h\b))',r'', content)
+
+        numbers_and_units = re.findall(r'(\d+\.*\d*\s?)([a-zA-Z]*[/]?[a-zA-Z]*)', text_without_time)
+
+        # remove numbers_and_units from text, rest is compound
+        compound = re.sub(r'\d+\.*\d*\s?[a-zA-Z]*[/]?[a-zA-Z]*', r'', text_without_time)
+        compound = compound.strip()
+        # assumption: only one unit couple
+        if numbers_and_units:
+            concentration_number = numbers_and_units[0][0].split()[0] #indexing after split because split makes list again
+            concentration_unit = numbers_and_units[0][1].split()[0]
+            numbers_and_units = concentration_number + " " + concentration_unit
+
+        result = (numbers_and_units, compound)
+        return result
+
+    def parse_for_exposure_duration(self, content):
+        """Parses Treatment-Data for duration"""
+        # extract time dates. eg. 30 min, 0.5h, 30s, ...
+        time_and_unit = re.findall(r'(\d+\.*\d*\s?)(millisecond|second|hour|minute'
+                                   r'|milliseconds|seconds|hours|minutes|sec|min|ms\b|s\b|m\b|h\b)', content)
+
+        #return time unit tuple (duration, unit)
+        return(time_and_unit[0])
+
+    def calculate_exposure_start(self, age, age_unit, duration, duration_unit):
+        """calculate difference between age and duration in hours"""
+
+        # not fully tested
+        age_in_hours = self.convert_to_hours(age, age_unit)
+        duration_in_hours = self.convert_to_hours(duration, duration_unit)
+
+        # im endeffekt embryo age - factor duration (als Annahme)
+        exposure_start_in_hours = age_in_hours - duration_in_hours
+        exposure_start_in_hours = round(exposure_start_in_hours, 4)
+
+        return(str(exposure_start_in_hours) + " " + "hours")
+
+    def convert_to_hours(self, duration, unit):
+        """convert duration to hours"""
+        # abbreviations that are checked to determine the unit
+        second_names = ["s", "s.", "sec", "sec.", "secs", "second", "seconds", "spf", "seconds post fertilization"]
+        minute_names = ["m", "m.", "min", "min.", "mins", "minute", "minutes", "mpf", "minutes post fertilization"]
+        hour_names = ["h", "h.", "hour", "hours", "hpf", "hours post fertilization", "hours post fert."]
+
+        # transform strings to floats
+        duration = float(duration)
+
+        if unit in second_names:
+            duration_in_hours = duration / 3600
+        elif unit in minute_names:
+            duration_in_hours = duration / 60
+        elif unit in hour_names:
+            duration_in_hours = duration
+        else:
+            duration_in_hours = None #testing purposes
+
+        return(duration_in_hours)
 
 
 class BadgerFish(XMLData):
@@ -642,7 +815,7 @@ class Parker(XMLData):
                     return self._fromstring(root.text).rstrip()
 
             else:
-                return self._fromstring(root.text.rstrip())
+                return self._fromstring(root.text)
 
         # Element names become object properties
         count = Counter(child.tag for child in children)
@@ -657,9 +830,9 @@ class Parker(XMLData):
                 tag = ET.QName(child).localname
 
             if self.ns_as_prefix:
-                # todo comment and uncomment here if URI instead of prefixes
+
                 tag = child.tag  # use this if uris as prefix
-            #    tag = self._uri_to_prefix(child.tag, nsmap) #use this if prefix
+            #    tag = self._uri_to_prefix(child.tag, nsmap) #use this if uri-prefix as prefix
 
             if count[child.tag] == 1:
                 result[tag] = self.data(child)
@@ -669,7 +842,7 @@ class Parker(XMLData):
         if self.schema_typing:
             if children:
                 self.schema_stack.pop()
-                # todo das hier will ich nur machen wenn ich nicht bei der root bin
+                # only do this if not root element - adjust if it causes problems
                 if self.schema_stack:
                     self.root_schema_element = self.schema_stack[-1]
 
@@ -699,7 +872,6 @@ class Abdera(XMLData):
             for attr, attrval in root.attrib.items():
 
                 if self.schema_typing:
-
                     schema_att_element = self.schema_attribute_stack[-1]
                     schema_types = schema_att_element.type
                     schema_attributes = schema_types.attributes
@@ -709,15 +881,15 @@ class Abdera(XMLData):
                         # attribute types are always simple types
                         schema_attribute_type = schema_attributes.get(attr).type.base_type
                         attrval = self._typemapping(attrval, schema_attribute_type)
-                        # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                        # harmonize synonyms
                         if self.harmonize_synonyms:
-                            attrval = self._harmonize_synonym(attrval)
+                            attrval = self._harmonize_tag(attrval)
                         value['attributes'][unicode(attr)] = attrval
 
                 if not self.schema_typing:
-                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                    # harmonize synonyms
                     if self.harmonize_synonyms:
-                        attrval = self._harmonize_synonym(attrval)
+                        attrval = self._harmonize_tag(attrval)
                     value['attributes'][unicode(attr)] = self._fromstring(attrval)
 
         # remove the last item from attribute stack (only if we have attributes and stack is not empty)
@@ -759,7 +931,6 @@ class Abdera(XMLData):
                         children_list = [self._fromstring(text.rstrip()), ]
 
         for child in children:
-
             if self.schema_typing:
                 self._find_schema_element(child)
 
@@ -769,7 +940,7 @@ class Abdera(XMLData):
         if self.schema_typing:
             if children:
                 self.schema_stack.pop()
-                # todo das hier will ich nur machen wenn ich nicht bei der root bin
+                # only do this if not root element - adjust if it causes problems
                 if self.schema_stack:
                     self.root_schema_element = self.schema_stack[-1]
 
@@ -785,10 +956,8 @@ class Abdera(XMLData):
             return self.dict([(unicode(tag), value)])
         # if we want prefixed objectnames
         if self.ns_as_prefix:
-            # use this function if prefix abbr. and not uris are wanted
-            #tag = self._uri_to_prefix(root.tag, nsmap)
-            # use this if uris as prefix are wanted
-            tag = root.tag
+            #tag = self._uri_to_prefix(root.tag, nsmap)  # use this function if prefix abbr. and not uris are wanted
+            tag = root.tag # use this if uris as prefix are wanted
             return self.dict([(unicode(tag), value)])
 
 
@@ -866,15 +1035,15 @@ class Cobra(XMLData):
                         # attribute types are always simple types
                         schema_attribute_type = schema_attributes.get(attr).type.base_type
                         attrval = self._typemapping(root.attrib[attr], schema_attribute_type)
-                        # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                        # harmonize synonyms
                         if self.harmonize_synonyms:
-                            attrval = self._harmonize_synonym(attrval)
+                            attrval = self._harmonize_tag(attrval)
                         value['attributes'][unicode(attr)] = attrval
 
                 if not self.schema_typing:
-                    # harmonize synonyms => certrain attribute values are converted to a harmonized value for easier query
+                    # harmonize synonyms
                     if self.harmonize_synonyms:
-                        attrval = self._harmonize_synonym(attrval)
+                        attrval = self._harmonize_tag(attrval)
                     value['attributes'][unicode(attr)] = root.attrib[attr]
 
         # remove the last item from attribute stack (only if we have attributes and stack is not empty)
