@@ -1,6 +1,8 @@
 ===============================
-xmljson - Fork for MINiML-Documents. Small changes to conventions, namespaces for XML-to-JSON-mappings, and schema checking for datatypes have been added. 
+xmljson - Fork for MINiML-Documents. 
 ===============================
+Small changes to conventions, namespace support for XML-to-JSON-mappings, and schema checking for datatypes have been added as well as a optional MINiML-Datacleaning in the transformation process.
+-------------------------------
 
 .. image:: https://img.shields.io/travis/sanand0/xmljson.svg
         :target: https://travis-ci.org/sanand0/xmljson
